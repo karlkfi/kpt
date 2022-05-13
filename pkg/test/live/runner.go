@@ -28,6 +28,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"sigs.k8s.io/cli-utils/pkg/kstatus/status"
+	"sigs.k8s.io/cli-utils/pkg/testutil"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
@@ -97,18 +98,20 @@ func (r *Runner) VerifyExitCode(t *testing.T, err error) {
 }
 
 func (r *Runner) VerifyStdout(t *testing.T, stdout string) {
-	assert.Equal(t, strings.TrimSpace(r.Config.StdOut), prepOutput(t, stdout))
+	testutil.AssertEqual(t, strings.TrimSpace(r.Config.StdOut), r.prepOutput(t, stdout))
 }
 
 func (r *Runner) VerifyStderr(t *testing.T, stderr string) {
-	assert.Equal(t, strings.TrimSpace(r.Config.StdErr), prepOutput(t, stderr))
+	testutil.AssertEqual(t, strings.TrimSpace(r.Config.StdErr), r.prepOutput(t, stderr))
 }
 
-func prepOutput(t *testing.T, s string) string {
-	txt := removeStatusEvents(t, s)
+func (r *Runner) prepOutput(t *testing.T, txt string) string {
+	txt = removeStatusEvents(t, txt)
 	txt = substituteTimestamps(txt)
 	txt = substituteUIDs(txt)
 	txt = substituteResourceVersion(txt)
+	txt = r.removeOptionalEvents(t, txt)
+	txt = removeClientSideThrottlingEvents(t, txt)
 	return strings.TrimSpace(txt)
 }
 
@@ -212,6 +215,46 @@ scan:
 		line := scanner.Text()
 		for _, s := range statuses {
 			if strings.Contains(line, s.String()) {
+				continue scan
+			}
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("error scanning output: %v", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func removeClientSideThrottlingEvents(t *testing.T, text string) string {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	var lines []string
+
+	pattern := regexp.MustCompile(".* Waited for .* due to client-side throttling, not priority and fairness, request: .*")
+
+scan:
+	for scanner.Scan() {
+		line := scanner.Text()
+		if pattern.MatchString(line) {
+			continue scan
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("error scanning output: %v", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (r *Runner) removeOptionalEvents(t *testing.T, text string) string {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	var lines []string
+
+scan:
+	for scanner.Scan() {
+		line := scanner.Text()
+		for _, s := range r.Config.OptionalStdOut {
+			if line == s {
 				continue scan
 			}
 		}
